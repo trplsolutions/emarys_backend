@@ -1,39 +1,33 @@
-# Virtual environment
-.venv/
-venv/
-ENV/
-
-# Environment variables
-.env
-.env.*
-
-# Python cache
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.pyc
 
-# Django / FastAPI / Flask
+# Virtual Environment
+venv/
+env/
+.venv/
+.env/
+
+# Environment Variables (NEVER commit this)
+.env
+
+# Django
 *.log
 db.sqlite3
-instance/
+staticfiles/
+media/
 
-# Build / dist
-build/
-dist/
-*.egg-info/
-
-# VS Code
+# IDE
 .vscode/
+.idea/
+*.swp
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Tests / coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
-# Migrations (uncomment if you REALLY want to ignore them)
-# migrations/
+# Migrations (optional: some teams commit these)
+# accounts/migrations/
