@@ -16,7 +16,9 @@ from .models import Customer, Inquiry
 from .serializers import (
     RegisterSerializer, UserSerializer,
     CustomerSerializer, InquirySerializer,
+    InquiryListSerializer,
 )
+
 
 User = get_user_model()
 
@@ -201,8 +203,16 @@ class ForgotPasswordConfirmView(APIView):
 # ═════════════════════════════════════════════
 
 class CustomerListCreateView(generics.ListCreateAPIView):
-    """GET /api/customers/ — list all  |  POST — create new"""
-    queryset           = Customer.objects.all()
+    """
+    GET  /api/customers/         — list all customers
+    POST /api/customers/         — upsert customer by email
+
+    Upsert behaviour on POST:
+      If a customer with the given email already exists, the existing record is
+      returned with HTTP 200.  If not, a new customer is created and returned
+      with HTTP 201.  This prevents duplicate-email errors when the same customer
+      submits multiple inquiries, and removes the need for a separate lookup call.
+    """
     serializer_class   = CustomerSerializer
     permission_classes = [IsAuthenticated]
     filter_backends    = [filters.SearchFilter, filters.OrderingFilter]
@@ -210,12 +220,31 @@ class CustomerListCreateView(generics.ListCreateAPIView):
     ordering_fields    = ['created_at', 'name']
     ordering           = ['-created_at']
 
+    def get_queryset(self):
+        return Customer.objects.all()
+
+    def create(self, request, *args, **kwargs):
+        email = request.data.get('email', '').lower().strip()
+        if email:
+            existing = Customer.objects.filter(email=email).first()
+            if existing:
+                # Customer already exists — return the existing record.
+                # HTTP 200 (not 201) signals "found, not created".
+                return Response(
+                    CustomerSerializer(existing).data,
+                    status=status.HTTP_200_OK,
+                )
+        # Customer does not exist — fall through to standard create (returns 201).
+        return super().create(request, *args, **kwargs)
+
 
 class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
     """GET/PUT/PATCH/DELETE /api/customers/<id>/"""
-    queryset           = Customer.objects.all()
     serializer_class   = CustomerSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Customer.objects.all()
 
 
 # ═════════════════════════════════════════════
@@ -223,28 +252,69 @@ class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
 # ═════════════════════════════════════════════
 
 class InquiryListCreateView(generics.ListCreateAPIView):
-    """GET /api/inquiries/ — list all  |  POST — create new"""
-    queryset           = Inquiry.objects.select_related('customer', 'created_by').all()
-    serializer_class   = InquirySerializer
+    """
+    GET  /api/inquiries/  — paginated list (lightweight, list-optimised serializer)
+    POST /api/inquiries/  — create new inquiry (full serializer with file support)
+
+    Supported query params:
+      ?search=<term>           — searches subject, product, customer name/company
+      ?status=pending|quoted|confirmed|closed
+      ?priority=low|medium|high
+      ?ordering=created_at|-created_at|status|priority
+    """
     permission_classes = [IsAuthenticated]
-    parser_classes     = [MultiPartParser, FormParser, JSONParser]  # Accept file uploads
+    parser_classes     = [MultiPartParser, FormParser, JSONParser]
     filter_backends    = [filters.SearchFilter, filters.OrderingFilter]
     search_fields      = ['subject', 'product', 'customer__name', 'customer__company_name']
     ordering_fields    = ['created_at', 'status', 'priority']
     ordering           = ['-created_at']
 
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['request'] = self.request
-        return context
+    def get_queryset(self):
+        """
+        Build the queryset fresh on every request.
+        Applies optional status and priority filters from query params.
+        Uses select_related to avoid N+1 queries on customer and created_by.
+        """
+        qs = Inquiry.objects.select_related('customer', 'created_by').all()
+
+        status_filter   = self.request.query_params.get('status')
+        priority_filter = self.request.query_params.get('priority')
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if priority_filter:
+            qs = qs.filter(priority=priority_filter)
+
+        return qs
+
+    def get_serializer_class(self):
+        """
+        Use a lightweight read-only serializer for LIST requests.
+        Use the full serializer for CREATE (POST) so all fields + file upload work.
+        This avoids sending heavy fields (notes, comments, document URL, etc.)
+        in the list view where they are not needed.
+        """
+        if self.request.method == 'GET':
+            return InquiryListSerializer
+        return InquirySerializer
 
     def perform_create(self, serializer):
+        """Automatically stamp the logged-in user as the inquiry creator."""
         serializer.save(created_by=self.request.user)
 
 
 class InquiryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """GET/PUT/PATCH/DELETE /api/inquiries/<id>/"""
-    queryset           = Inquiry.objects.select_related('customer', 'created_by').all()
+    """
+    GET    /api/inquiries/<id>/  — full inquiry detail
+    PUT    /api/inquiries/<id>/  — full update
+    PATCH  /api/inquiries/<id>/  — partial update (e.g. change status only)
+    DELETE /api/inquiries/<id>/  — delete inquiry
+    """
     serializer_class   = InquirySerializer
     permission_classes = [IsAuthenticated]
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        return Inquiry.objects.select_related('customer', 'created_by').all()
+
+
